@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -39,8 +37,31 @@ var paddings = []struct {
 // любого формата. Исходные файлы читаются, результаты остаются в каталоге запуска.
 // Возвращаемый путь позволяет найти результаты и при ошибке.
 func Run(ctx context.Context, outputDir string, paths []string, log io.Writer) (string, error) {
+	return RunWithCipher(ctx, outputDir, paths, log, DemoCipher{
+		Name: "DES", Extension: "des", DirectoryPrefix: "des-demo-",
+		Key: []byte{0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1},
+		New: func() point2.SymmetricCipher { return point4.NewDESCipher() },
+	})
+}
+
+// DemoCipher позволяет пункту 7 использовать ту же демонстрацию с DEAL.
+type DemoCipher struct {
+	Name            string
+	Extension       string
+	DirectoryPrefix string
+	Key             []byte
+	New             func() point2.SymmetricCipher
+}
+
+func RunWithCipher(ctx context.Context, outputDir string, paths []string, log io.Writer, algorithm DemoCipher) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if algorithm.New == nil || len(algorithm.Key) == 0 {
+		return "", fmt.Errorf("для демонстрации нужны фабрика шифра и ключ")
 	}
 	if log == nil {
 		log = io.Discard
@@ -48,17 +69,17 @@ func Run(ctx context.Context, outputDir string, paths []string, log io.Writer) (
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return "", err
 	}
-	dir, err := os.MkdirTemp(outputDir, "des-demo-")
+	dir, err := os.MkdirTemp(outputDir, algorithm.DirectoryPrefix)
 	if err != nil {
 		return "", err
 	}
-	if err := run(ctx, dir, paths, log); err != nil {
+	if err := run(ctx, dir, paths, log, algorithm); err != nil {
 		return dir, err
 	}
 	return dir, nil
 }
 
-func run(ctx context.Context, dir string, paths []string, log io.Writer) error {
+func run(ctx context.Context, dir string, paths []string, log io.Writer, algorithm DemoCipher) error {
 	inputs := filepath.Join(dir, "inputs")
 	if err := os.Mkdir(inputs, 0755); err != nil {
 		return err
@@ -68,9 +89,15 @@ func run(ctx context.Context, dir string, paths []string, log io.Writer) error {
 		return err
 	}
 	files := append(generated, paths...)
+	probe := algorithm.New()
+	if probe == nil {
+		return fmt.Errorf("фабрика вернула nil вместо шифра")
+	}
+	blockSize := probe.BlockSize()
+	fmt.Fprintf(log, "%s: ключ %d бит, блок %d байт\n", algorithm.Name, len(algorithm.Key)*8, blockSize)
 	rng := rand.New(rand.NewSource(42)) // Воспроизводимые псевдослучайные входные данные.
 	arrays := make([][]byte, 0, 8)
-	for _, size := range []int{0, 1, 7, 8, 9, 31, 64, 1025} {
+	for _, size := range []int{0, 1, blockSize - 1, blockSize, blockSize + 1, 31, 64, 1025} {
 		data := make([]byte, size)
 		if _, err := rng.Read(data); err != nil {
 			return err
@@ -87,7 +114,7 @@ func run(ctx context.Context, dir string, paths []string, log io.Writer) error {
 				return err
 			}
 			newContext := func() (*point2.CipherContext, error) {
-				return point2.NewCipherContext(point4.NewDESCipher(), []byte{0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1}, mode.mode, padding.padding, nil, point2.WithWorkers(4))
+				return point2.NewCipherContext(algorithm.New(), algorithm.Key, mode.mode, padding.padding, nil, point2.WithWorkers(4))
 			}
 			for _, data := range arrays {
 				c, err := newContext()
@@ -128,23 +155,9 @@ func run(ctx context.Context, dir string, paths []string, log io.Writer) error {
 					return err
 				}
 				name := fmt.Sprintf("%02d-%s", i, filepath.Base(source))
-				encryptedPath := filepath.Join(resultDir, name+".des")
+				encryptedPath := filepath.Join(resultDir, name+"."+algorithm.Extension)
 				restoredPath := filepath.Join(resultDir, name+".restored")
 				if err := <-c.EncryptFile(ctx, source, encryptedPath); err != nil {
-					return err
-				}
-				// Параметры позволяют повторить дешифрование вне текущего запуска.
-				metadata, err := json.MarshalIndent(struct {
-					Key     string             `json:"demo_key_hex"`
-					IV      string             `json:"iv_hex"`
-					Delta   string             `json:"delta_hex"`
-					Mode    point2.CipherMode  `json:"mode"`
-					Padding point2.PaddingMode `json:"padding"`
-				}{"133457799bbcdff1", hex.EncodeToString(c.IV()), hex.EncodeToString(c.Delta()), mode.mode, padding.padding}, "", "  ")
-				if err != nil {
-					return err
-				}
-				if err := os.WriteFile(encryptedPath+".json", metadata, 0600); err != nil {
 					return err
 				}
 				if err := <-c.DecryptFile(ctx, encryptedPath, restoredPath); err != nil {

@@ -124,7 +124,7 @@ func NewCipherContext(cipher SymmetricCipher, key []byte, mode CipherMode, paddi
 			if _, err := rand.Read(settings.delta); err != nil {
 				return nil, fmt.Errorf("генерация Delta: %w", err)
 			}
-			settings.delta[blockSize-1] |= 1
+			settings.delta[blockSize-1] |= 1 // делаем нечетным, чтобы были все возможные значения счетчика
 		}
 		if len(settings.delta) != blockSize || allZero(settings.delta) {
 			return nil, fmt.Errorf("Delta должна быть ненулевым массивом из %d байт", blockSize)
