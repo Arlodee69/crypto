@@ -4,9 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"cryptography/lab1/point_1"
-	"cryptography/lab1/point_2"
-	"cryptography/lab1/point_3"
+	point1 "cryptography/lab1/point_1"
+	point2 "cryptography/lab1/point_2"
+	point3 "cryptography/lab1/point_3"
 )
 
 const BlockSize = 8
@@ -83,7 +83,6 @@ func (DESKeyExpander) ExpandKey(key []byte) ([][]byte, error) {
 	for i, shift := range keyShifts {
 		left = ((left << shift) | (left >> (28 - shift))) & 0xfffffff
 		right = ((right << shift) | (right >> (28 - shift))) & 0xfffffff
-		// Permute читает 56 значащих битов от старшего бита первого байта.
 		var packed [8]byte
 		binary.BigEndian.PutUint64(packed[:], (uint64(left)<<28|uint64(right))<<8)
 		keys[i], err = permute(packed[:7], compressionPermutation[:])
@@ -93,6 +92,7 @@ func (DESKeyExpander) ExpandKey(key []byte) ([][]byte, error) {
 	}
 	return keys, nil
 }
+
 type DESRoundTransformer struct{}
 
 func (DESRoundTransformer) Transform(block, roundKey []byte) ([]byte, error) {

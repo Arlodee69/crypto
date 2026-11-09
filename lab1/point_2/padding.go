@@ -5,7 +5,6 @@ import (
 	"fmt"
 )
 
-// PaddingMode задаёт способ набивки последнего блока.
 type PaddingMode uint8
 
 const (
@@ -44,16 +43,22 @@ func addPadding(data []byte, blockSize int, mode PaddingMode) ([]byte, error) {
 	return result, nil
 }
 
-func removePadding(data []byte, blockSize int, mode PaddingMode) ([]byte, error) {
+func removePadding(data []byte, blockSize int, mode PaddingMode, originalLength ...int) ([]byte, error) {
 	if len(data)%blockSize != 0 {
 		return nil, fmt.Errorf("длина данных не кратна размеру блока")
 	}
 	if mode == Zeros {
-		end := len(data)
-		for end > 0 && data[end-1] == 0 {
-			end--
+		if len(originalLength) != 1 {
+			return nil, fmt.Errorf("для снятия Zeros нужна исходная длина")
 		}
-		return data[:end], nil
+		length := originalLength[0]
+		if length < 0 || length > len(data) || len(data)-length >= blockSize {
+			return nil, fmt.Errorf("недопустимая исходная длина для Zeros: %d", length)
+		}
+		if !allZero(data[length:]) {
+			return nil, fmt.Errorf("повреждена набивка Zeros")
+		}
+		return data[:length], nil
 	}
 	if len(data) == 0 {
 		return nil, fmt.Errorf("отсутствует блок с набивкой")

@@ -1,21 +1,14 @@
-// Package point5 демонстрирует DES через асинхронный контекст пункта 2.
 package point5
 
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"io"
 	"math/rand"
-	"os"
-	"path/filepath"
 
-	"cryptography/lab1/point_2"
-	"cryptography/lab1/point_4"
+	point2 "cryptography/lab1/point_2"
+	point4 "cryptography/lab1/point_4"
 )
 
 var modes = []struct {
@@ -32,204 +25,73 @@ var paddings = []struct {
 	{point2.Zeros, "Zeros"}, {point2.ANSIX923, "ANSIX923"}, {point2.PKCS7, "PKCS7"}, {point2.ISO10126, "ISO10126"},
 }
 
-// Run создаёт отдельный каталог запуска внутри outputDir и проверяет точное
-// восстановление массивов и файлов. Дополнительные paths могут содержать файлы
-// любого формата. Исходные файлы читаются, результаты остаются в каталоге запуска.
-// Возвращаемый путь позволяет найти результаты и при ошибке.
-func Run(ctx context.Context, outputDir string, paths []string, log io.Writer) (string, error) {
-	return RunWithCipher(ctx, outputDir, paths, log, DemoCipher{
-		Name: "DES", Extension: "des", DirectoryPrefix: "des-demo-",
-		Key: []byte{0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1},
-		New: func() point2.SymmetricCipher { return point4.NewDESCipher() },
-	})
-}
-
-// DemoCipher позволяет пункту 7 использовать ту же демонстрацию с DEAL.
-type DemoCipher struct {
-	Name            string
-	Extension       string
-	DirectoryPrefix string
-	Key             []byte
-	New             func() point2.SymmetricCipher
-}
-
-func RunWithCipher(ctx context.Context, outputDir string, paths []string, log io.Writer, algorithm DemoCipher) (string, error) {
+func TestBytes(ctx context.Context, cipher point2.SymmetricCipher, key []byte, log io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	if algorithm.New == nil || len(algorithm.Key) == 0 {
-		return "", fmt.Errorf("для демонстрации нужны фабрика шифра и ключ")
+		return err
 	}
 	if log == nil {
 		log = io.Discard
 	}
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return "", err
-	}
-	dir, err := os.MkdirTemp(outputDir, algorithm.DirectoryPrefix)
-	if err != nil {
-		return "", err
-	}
-	if err := run(ctx, dir, paths, log, algorithm); err != nil {
-		return dir, err
-	}
-	return dir, nil
-}
 
-func run(ctx context.Context, dir string, paths []string, log io.Writer, algorithm DemoCipher) error {
-	inputs := filepath.Join(dir, "inputs")
-	if err := os.Mkdir(inputs, 0755); err != nil {
-		return err
-	}
-	generated, err := createSamples(inputs)
-	if err != nil {
-		return err
-	}
-	files := append(generated, paths...)
-	probe := algorithm.New()
-	if probe == nil {
-		return fmt.Errorf("фабрика вернула nil вместо шифра")
-	}
-	blockSize := probe.BlockSize()
-	fmt.Fprintf(log, "%s: ключ %d бит, блок %d байт\n", algorithm.Name, len(algorithm.Key)*8, blockSize)
-	rng := rand.New(rand.NewSource(42)) // Воспроизводимые псевдослучайные входные данные.
+	rng := rand.New(rand.NewSource(42))
+	blockSize := cipher.BlockSize()
 	arrays := make([][]byte, 0, 8)
 	for _, size := range []int{0, 1, blockSize - 1, blockSize, blockSize + 1, 31, 64, 1025} {
 		data := make([]byte, size)
 		if _, err := rng.Read(data); err != nil {
 			return err
 		}
-		// Zeros не сохраняет концевые нули; для этого примера последний байт ненулевой.
-		if size > 0 {
-			data[size-1] = 1
-		}
 		arrays = append(arrays, data)
 	}
+
 	for _, mode := range modes {
 		for _, padding := range paddings {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			newContext := func() (*point2.CipherContext, error) {
-				return point2.NewCipherContext(algorithm.New(), algorithm.Key, mode.mode, padding.padding, nil, point2.WithWorkers(4))
-			}
 			for _, data := range arrays {
-				c, err := newContext()
+				c, err := point2.NewCipherContext(cipher, key, mode.mode, padding.padding, nil, point2.WithWorkers(4))
 				if err != nil {
 					return err
 				}
+
 				encrypted := <-c.Encrypt(ctx, data)
 				if encrypted.Err != nil {
 					return encrypted.Err
 				}
-				decrypted := <-c.Decrypt(ctx, encrypted.Data)
+				decrypted := <-c.Decrypt(ctx, encrypted.Data, len(data))
 				if decrypted.Err != nil {
 					return decrypted.Err
 				}
+
 				if !bytes.Equal(data, decrypted.Data) {
 					return fmt.Errorf("%s/%s: массив %d байт восстановлен неверно", mode.name, padding.name, len(data))
 				}
 			}
 			fmt.Fprintf(log, "%s/%s: %d массивов — OK\n", mode.name, padding.name, len(arrays))
-			// Для произвольных файлов нужны набивки, сохраняющие концевые нули.
-			if padding.padding == point2.Zeros {
-				continue
-			}
-			resultDir := filepath.Join(dir, mode.name, padding.name)
-			if err := os.MkdirAll(resultDir, 0755); err != nil {
-				return err
-			}
-			for i, source := range files {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				original, err := os.ReadFile(source)
-				if err != nil {
-					return fmt.Errorf("чтение %s: %w", source, err)
-				}
-				c, err := newContext()
-				if err != nil {
-					return err
-				}
-				name := fmt.Sprintf("%02d-%s", i, filepath.Base(source))
-				encryptedPath := filepath.Join(resultDir, name+"."+algorithm.Extension)
-				restoredPath := filepath.Join(resultDir, name+".restored")
-				if err := <-c.EncryptFile(ctx, source, encryptedPath); err != nil {
-					return err
-				}
-				if err := <-c.DecryptFile(ctx, encryptedPath, restoredPath); err != nil {
-					return err
-				}
-				restored, err := os.ReadFile(restoredPath)
-				if err != nil {
-					return err
-				}
-				if !bytes.Equal(original, restored) {
-					return fmt.Errorf("%s/%s: файл %s восстановлен неверно", mode.name, padding.name, source)
-				}
-				fmt.Fprintf(log, "  %s: %d байт — OK\n", source, len(original))
-			}
 		}
 	}
 	return nil
 }
 
-// Небольшие валидные образцы не требуют внешних файлов или медиабиблиотек.
-func createSamples(dir string) ([]string, error) {
-	var picture bytes.Buffer
-	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
-			img.Set(x, y, color.RGBA{uint8(x * 32), uint8(y * 32), 128, 255})
-		}
+func RunBytes(ctx context.Context) (string, error) {
+	data := []byte{0x00, 0x00}
+	key := []byte{0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1}
+	c, err := point2.NewCipherContext(point4.NewDESCipher(), key, point2.CFB, point2.Zeros, nil)
+	if err != nil {
+		return "", err
 	}
-	if err := png.Encode(&picture, img); err != nil {
-		return nil, err
+
+	encrypted := <-c.Encrypt(ctx, data)
+	if encrypted.Err != nil {
+		return "", encrypted.Err
 	}
-	// WAV: PCM mono, 8 kHz, 8 бит, короткий прямоугольный тон.
-	audio := make([]byte, 44+800)
-	copy(audio, "RIFF")
-	binary.LittleEndian.PutUint32(audio[4:], uint32(len(audio)-8))
-	copy(audio[8:], "WAVEfmt ")
-	binary.LittleEndian.PutUint32(audio[16:], 16)
-	binary.LittleEndian.PutUint16(audio[20:], 1)
-	binary.LittleEndian.PutUint16(audio[22:], 1)
-	binary.LittleEndian.PutUint32(audio[24:], 8000)
-	binary.LittleEndian.PutUint32(audio[28:], 8000)
-	binary.LittleEndian.PutUint16(audio[32:], 1)
-	binary.LittleEndian.PutUint16(audio[34:], 8)
-	copy(audio[36:], "data")
-	binary.LittleEndian.PutUint32(audio[40:], 800)
-	for i := 44; i < len(audio); i++ {
-		audio[i] = 96
-		if (i-44)%20 < 10 {
-			audio[i] = 160
-		}
+	decrypted := <-c.Decrypt(ctx, encrypted.Data, len(data))
+	if decrypted.Err != nil {
+		return "", decrypted.Err
 	}
-	// YUV4MPEG2: два кадра 2x2, planar YUV 4:2:0, 25 кадров/с.
-	video := []byte("YUV4MPEG2 W2 H2 F25:1 Ip A1:1 C420jpeg\nFRAME\n")
-	video = append(video, 16, 80, 160, 235, 128, 128)
-	video = append(video, []byte("FRAME\n")...)
-	video = append(video, 235, 160, 80, 16, 128, 128)
-	samples := []struct {
-		name string
-		data []byte
-	}{
-		{"text.txt", []byte("Лабораторная работа 1: DES, шифрование и дешифрование.\n")},
-		{"image.png", picture.Bytes()}, {"tone.wav", audio}, {"video.y4m", video},
-		{"source_test.go", []byte("package sample\n\nimport \"testing\"\n\nfunc TestSum(t *testing.T) {\n\tif 2+2 != 4 { t.Fatal(\"sum\") }\n}\n")},
-		{"trailing-zero.bin", []byte{1, 2, 3, 0, 0, 0}},
+	if !bytes.Equal(data, decrypted.Data) {
+		return "", fmt.Errorf("CFB/Zeros: массив восстановлен неверно")
 	}
-	paths := make([]string, 0, len(samples))
-	for _, sample := range samples {
-		path := filepath.Join(dir, sample.name)
-		if err := os.WriteFile(path, sample.data, 0600); err != nil {
-			return nil, err
-		}
-		paths = append(paths, path)
-	}
-	return paths, nil
+	return "массив восстановлен верно", nil
 }

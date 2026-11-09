@@ -1,18 +1,15 @@
-// Package point6 реализует DEAL на базе сети Фейстеля и DES из пунктов 3 и 4.
 package point6
 
 import (
 	"fmt"
 
-	"cryptography/lab1/point_2"
-	"cryptography/lab1/point_3"
-	"cryptography/lab1/point_4"
+	point2 "cryptography/lab1/point_2"
+	point3 "cryptography/lab1/point_3"
+	point4 "cryptography/lab1/point_4"
 )
 
 const BlockSize = 16
 
-// DEALCipher обрабатывает 128-битные блоки. SetKey выбирает 6 раундов для
-// ключей 128/192 бит и 8 для 256 бит. Ключ настраивается до обработки данных.
 type DEALCipher struct{ network *point3.FeistelCipher }
 
 var _ point2.SymmetricCipher = (*DEALCipher)(nil)
@@ -44,7 +41,6 @@ func (c *DEALCipher) SetKey(key []byte) error {
 	if err := network.SetKey(key); err != nil {
 		return err
 	}
-	// Неудачная настройка не уничтожает ранее установленный ключ.
 	c.network = network
 	return nil
 }
@@ -65,10 +61,6 @@ func (c *DEALCipher) DecryptBlock(block []byte) ([]byte, error) {
 	return c.network.DecryptBlock(block)
 }
 
-// DEALKeyExpander генерирует 64-битные DES-ключи с помощью DES-CBC
-// с фиксированным ключом 0123456789ABCDEF и нулевым начальным состоянием.
-// После первого прохода по частям исходного ключа добавляются константы
-// 8000000000000000, 4000000000000000, 2000000000000000, 1000000000000000.
 type DEALKeyExpander struct{}
 
 func (DEALKeyExpander) ExpandKey(key []byte) ([][]byte, error) {

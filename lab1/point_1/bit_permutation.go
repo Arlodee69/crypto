@@ -9,9 +9,6 @@ const (
 	LeastSignificantFirst
 )
 
-// MSB: [0,1,2,3,4,5,6,7], [8,9,10,11,12,13,14,15];
-// LSB: [15,14,13,12,11,10,9,8], [7,6,5,4,3,2,1,0].
-
 func Permute(value []byte, pBlock []int, bitOrder BitOrder, firstBitNumber int) ([]byte, error) {
 	if value == nil {
 		return nil, fmt.Errorf("исходное значение не должно быть nil")

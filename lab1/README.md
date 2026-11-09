@@ -22,9 +22,9 @@
 | 2.4 | [point_2/cipher_context.go](point_2/cipher_context.go), [point_2/cipher_modes.go](point_2/cipher_modes.go), [point_2/padding.go](point_2/padding.go) | Контекст, режимы, набивки, асинхронная обработка массивов и файлов |
 | 3 | [point_3/feistel_cipher.go](point_3/feistel_cipher.go) | `FeistelCipher`: сеть Фейстеля с настраиваемыми генератором ключей и раундовым преобразованием |
 | 4 | [point_4/des.go](point_4/des.go) | `DESCipher`, `DESKeyExpander`, `DESRoundTransformer` |
-| 5 | [point_5/demo.go](point_5/demo.go) | `Run`: проверка шифрования и дешифрования массивов и файлов; команда `go run ./point_5/cmd/des_demo` |
+| 5 | [point_5/demo.go](point_5/demo.go), [point_5/files.go](point_5/files.go) | `TestBytes`, `TestFiles`, `RunBytes`; команда `go run ./point_5/cmd/des_demo` |
 | 6 | [point_6/deal.go](point_6/deal.go) | `DEALCipher`, `DEALKeyExpander`, `DESAdapter` |
-| 7 | [point_7/demo.go](point_7/demo.go) | `Run`, `RunWithKey`; команда `go run ./point_7/cmd/deal_demo` |
+| 7 | [point_7/cmd/deal_demo/main.go](point_7/cmd/deal_demo/main.go) | Прямые вызовы `TestBytes` и `TestFiles` для DEAL; команда `go run ./point_7/cmd/deal_demo` |
 
 Контекст принимает реализацию `SymmetricCipher`, в том числе `point3.FeistelCipher`, `point4.DESCipher` и `point6.DEALCipher`. DEAL использует полный DES как раундовую функцию внешней сети Фейстеля. Готовые криптографические алгоритмы из библиотек не используются; `crypto/rand` нужен только для случайных IV, шага и набивки ISO 10126.
 

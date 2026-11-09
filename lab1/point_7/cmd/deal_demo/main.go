@@ -8,7 +8,8 @@ import (
 	"os"
 	"os/signal"
 
-	"cryptography/lab1/point_7"
+	point5 "cryptography/lab1/point_5"
+	point6 "cryptography/lab1/point_6"
 )
 
 func main() {
@@ -22,12 +23,25 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	dir, err := point7.RunWithKey(ctx, *output, flag.Args(), os.Stdout, key)
-	if dir != "" {
-		fmt.Println("Результаты:", dir)
+
+	fmt.Println("DEAL: проверка массивов")
+	if err := point5.TestBytes(ctx, point6.NewDEALCipher(), key, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
+	if err := os.MkdirAll(*output, 0755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	dir, err := os.MkdirTemp(*output, "deal-demo-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	fmt.Println("DEAL: проверка файлов")
+	if err := point5.TestFiles(ctx, point6.NewDEALCipher(), key, dir, flag.Args(), os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println("Все проверки DEAL пройдены. Результаты:", dir)
 }

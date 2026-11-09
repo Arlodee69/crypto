@@ -10,7 +10,6 @@ import (
 	"runtime"
 )
 
-// CipherMode задаёт режим работы блочного шифра.
 type CipherMode uint8
 
 const (
@@ -28,10 +27,8 @@ type contextOptions struct {
 	delta   []byte
 }
 
-// ContextOption задаёт дополнительный параметр конструктора (пункт 2.4).
 type ContextOption func(*contextOptions) error
 
-// WithWorkers ограничивает число параллельно обрабатываемых блоков.
 func WithWorkers(workers int) ContextOption {
 	return func(options *contextOptions) error {
 		if workers < 1 {
@@ -42,8 +39,6 @@ func WithWorkers(workers int) ContextOption {
 	}
 }
 
-// WithDelta задаёт ненулевой шаг счётчика для Random Delta.
-// Если шаг не задан, конструктор генерирует случайный нечётный шаг.
 func WithDelta(delta []byte) ContextOption {
 	copyOfDelta := append([]byte(nil), delta...)
 	return func(options *contextOptions) error {
@@ -55,15 +50,16 @@ func WithDelta(delta []byte) ContextOption {
 	}
 }
 
-// CipherResult содержит результат асинхронного преобразования.
 type CipherResult struct {
 	Data []byte
 	Err  error
 }
 
 // CipherContext объединяет шифр, режим, набивку и параметры (пункт 2.4).
-// Переданный шифр принадлежит контексту: после создания нельзя менять его ключ
-// или передавать его другому контексту. Сам контекст допускает параллельные операции.
+// Пока контекст используется, нельзя менять ключ шифра или настраивать этот шифр
+// другим контекстом. После завершения всех операций шифр можно использовать
+// в следующем контексте, если старый больше не вызывается.
+// Сам контекст допускает параллельные операции без перенастройки шифра.
 type CipherContext struct {
 	cipher    SymmetricCipher
 	mode      CipherMode
@@ -74,11 +70,6 @@ type CipherContext struct {
 	workers   int
 }
 
-// NewCipherContext настраивает шифр ключом. iv необязателен (nil): для режимов,
-// кроме ECB, тогда генерируется случайный вектор длиной BlockSize.
-// Для дешифрования нужно передать тот же IV и, для Random Delta, тот же Delta.
-// В CTR и Random Delta счётчик трактуется как целое big-endian; шаги равны
-// соответственно 1 и Delta, сложение выполняется по модулю 2^(8*BlockSize).
 func NewCipherContext(cipher SymmetricCipher, key []byte, mode CipherMode, padding PaddingMode, iv []byte, options ...ContextOption) (*CipherContext, error) {
 	if cipher == nil || isNilCipher(cipher) {
 		return nil, fmt.Errorf("шифр не должен быть nil")
@@ -156,24 +147,20 @@ func allZero(data []byte) bool {
 	return true
 }
 
-// IV возвращает копию вектора инициализации для сохранения вместе с шифротекстом.
 func (c *CipherContext) IV() []byte { return append([]byte(nil), c.iv...) }
 
-// Delta возвращает копию шага Random Delta для последующего дешифрования.
 func (c *CipherContext) Delta() []byte { return append([]byte(nil), c.delta...) }
 
-// Encrypt запускает шифрование и возвращает канал с одним результатом.
-// Входной массив копируется до запуска goroutine; канал затем закрывается.
 func (c *CipherContext) Encrypt(ctx context.Context, data []byte) <-chan CipherResult {
 	return c.launch(ctx, data, false)
 }
 
-// Decrypt запускает дешифрование и удаление набивки.
-func (c *CipherContext) Decrypt(ctx context.Context, data []byte) <-chan CipherResult {
-	return c.launch(ctx, data, true)
+func (c *CipherContext) Decrypt(ctx context.Context, data []byte, originalLength ...int) <-chan CipherResult {
+	return c.launch(ctx, data, true, originalLength...)
 }
 
-func (c *CipherContext) launch(ctx context.Context, data []byte, decrypt bool) <-chan CipherResult {
+func (c *CipherContext) launch(ctx context.Context, data []byte, decrypt bool, originalLength ...int) <-chan CipherResult {
+	originalLength = append([]int(nil), originalLength...)
 	input := append([]byte(nil), data...)
 	result := make(chan CipherResult, 1)
 	if ctx == nil {
@@ -181,31 +168,28 @@ func (c *CipherContext) launch(ctx context.Context, data []byte, decrypt bool) <
 	}
 	go func() {
 		defer close(result)
-		output, err := c.process(ctx, input, decrypt)
+		output, err := c.process(ctx, input, decrypt, originalLength...)
 		result <- CipherResult{Data: output, Err: err}
 	}()
 	return result
 }
 
-// EncryptInto записывает результат в переменную по ссылке.
-// Читать или изменять destination можно только после получения результата из канала.
 func (c *CipherContext) EncryptInto(ctx context.Context, data []byte, destination *[]byte) <-chan error {
 	return c.into(ctx, data, destination, false)
 }
 
-// DecryptInto — вариант дешифрования с записью результата по ссылке.
-func (c *CipherContext) DecryptInto(ctx context.Context, data []byte, destination *[]byte) <-chan error {
-	return c.into(ctx, data, destination, true)
+func (c *CipherContext) DecryptInto(ctx context.Context, data []byte, destination *[]byte, originalLength ...int) <-chan error {
+	return c.into(ctx, data, destination, true, originalLength...)
 }
 
-func (c *CipherContext) into(ctx context.Context, data []byte, destination *[]byte, decrypt bool) <-chan error {
+func (c *CipherContext) into(ctx context.Context, data []byte, destination *[]byte, decrypt bool, originalLength ...int) <-chan error {
 	finished := make(chan error, 1)
 	if destination == nil {
 		finished <- fmt.Errorf("ссылка на результат не должна быть nil")
 		close(finished)
 		return finished
 	}
-	operation := c.launch(ctx, data, decrypt)
+	operation := c.launch(ctx, data, decrypt, originalLength...)
 	go func() {
 		defer close(finished)
 		result := <-operation
@@ -217,12 +201,10 @@ func (c *CipherContext) into(ctx context.Context, data []byte, destination *[]by
 	return finished
 }
 
-// EncryptFile асинхронно шифрует файл. Файл целиком загружается в память.
 func (c *CipherContext) EncryptFile(ctx context.Context, inputPath, outputPath string) <-chan error {
 	return c.file(ctx, inputPath, outputPath, false)
 }
 
-// DecryptFile асинхронно дешифрует файл.
 func (c *CipherContext) DecryptFile(ctx context.Context, inputPath, outputPath string) <-chan error {
 	return c.file(ctx, inputPath, outputPath, true)
 }
@@ -243,25 +225,25 @@ func (c *CipherContext) processFile(ctx context.Context, inputPath, outputPath s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	input, err := os.ReadFile(inputPath)
+	input, err := os.Open(inputPath)
 	if err != nil {
-		return fmt.Errorf("чтение файла: %w", err)
+		return fmt.Errorf("открытие файла: %w", err)
 	}
-	output, err := c.process(ctx, input, decrypt)
+	defer input.Close()
+	info, err := input.Stat()
 	if err != nil {
 		return err
 	}
-	// До успешного преобразования и записи во временный файл результат не меняется.
 	temporary, err := os.CreateTemp(filepath.Dir(outputPath), ".lab1-*")
 	if err != nil {
 		return fmt.Errorf("создание файла: %w", err)
 	}
 	defer os.Remove(temporary.Name())
-	_, writeErr := temporary.Write(output)
-	closeErr := temporary.Close()
-	if writeErr != nil {
-		return fmt.Errorf("запись файла: %w", writeErr)
+	defer temporary.Close()
+	if err := c.processStream(ctx, input, temporary, decrypt, info.Size()); err != nil {
+		return err
 	}
+	closeErr := temporary.Close()
 	if closeErr != nil {
 		return closeErr
 	}
@@ -274,7 +256,7 @@ func (c *CipherContext) processFile(ctx context.Context, inputPath, outputPath s
 	return nil
 }
 
-func (c *CipherContext) process(ctx context.Context, data []byte, decrypt bool) ([]byte, error) {
+func (c *CipherContext) process(ctx context.Context, data []byte, decrypt bool, originalLength ...int) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -294,7 +276,7 @@ func (c *CipherContext) process(ctx context.Context, data []byte, decrypt bool) 
 		return nil, err
 	}
 	if decrypt {
-		return removePadding(output, c.blockSize, c.padding)
+		return removePadding(output, c.blockSize, c.padding, originalLength...)
 	}
 	return output, nil
 }

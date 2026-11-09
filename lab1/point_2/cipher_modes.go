@@ -7,6 +7,19 @@ import (
 )
 
 func (c *CipherContext) transform(ctx context.Context, data []byte, decrypt bool) ([]byte, error) {
+	return c.transformChunk(ctx, data, decrypt, c.newModeState())
+}
+
+type modeState struct {
+	feedback []byte
+	counter  []byte
+}
+
+func (c *CipherContext) newModeState() *modeState {
+	return &modeState{feedback: append([]byte(nil), c.iv...), counter: append([]byte(nil), c.iv...)}
+}
+
+func (c *CipherContext) transformChunk(ctx context.Context, data []byte, decrypt bool, state *modeState) ([]byte, error) {
 	output := make([]byte, len(data))
 	blocks := len(data) / c.blockSize
 	if c.mode == ECB || c.mode == CTR || c.mode == RandomDelta ||
@@ -22,14 +35,14 @@ func (c *CipherContext) transform(ctx context.Context, data []byte, decrypt bool
 			case CBC:
 				result, err = c.block(input, true)
 				if err == nil {
-					previous := c.iv
+					previous := state.feedback
 					if index > 0 {
 						previous = data[start-c.blockSize : start]
 					}
 					result = xorBytes(result, previous)
 				}
 			case CFB:
-				previous := c.iv
+				previous := state.feedback
 				if index > 0 {
 					previous = data[start-c.blockSize : start]
 				}
@@ -43,7 +56,7 @@ func (c *CipherContext) transform(ctx context.Context, data []byte, decrypt bool
 					step = make([]byte, c.blockSize)
 					step[c.blockSize-1] = 1
 				}
-				counter := counterAt(c.iv, step, index)
+				counter := counterAt(state.counter, step, index)
 				result, err = c.block(counter, false)
 				if err == nil {
 					result = xorBytes(input, result)
@@ -58,10 +71,21 @@ func (c *CipherContext) transform(ctx context.Context, data []byte, decrypt bool
 		if err != nil {
 			return nil, err
 		}
+		if blocks > 0 && (c.mode == CBC || c.mode == CFB) {
+			state.feedback = append(state.feedback[:0], data[len(data)-c.blockSize:]...)
+		}
+		if c.mode == CTR || c.mode == RandomDelta {
+			step := c.delta
+			if c.mode == CTR {
+				step = make([]byte, c.blockSize)
+				step[c.blockSize-1] = 1
+			}
+			state.counter = counterAt(state.counter, step, blocks)
+		}
 		return output, nil
 	}
 
-	feedback := append([]byte(nil), c.iv...)
+	feedback := state.feedback
 	for index := 0; index < blocks; index++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -108,10 +132,10 @@ func (c *CipherContext) transform(ctx context.Context, data []byte, decrypt bool
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	state.feedback = feedback
 	return output, nil
 }
 
-// block проверяет контракт реализации шифра перед использованием результата.
 func (c *CipherContext) block(input []byte, decrypt bool) ([]byte, error) {
 	var result []byte
 	var err error
@@ -137,7 +161,6 @@ func xorBytes(left, right []byte) []byte {
 	return result
 }
 
-// addCounter складывает целые big-endian по модулю 2^(8*len(destination)).
 func addCounter(destination, step []byte) {
 	carry := 0
 	for i := len(destination) - 1; i >= 0; i-- {
@@ -147,7 +170,6 @@ func addCounter(destination, step []byte) {
 	}
 }
 
-// counterAt вычисляет IV + index*step без последовательного обхода блоков.
 func counterAt(iv, step []byte, index int) []byte {
 	result := append([]byte(nil), iv...)
 	multiple := append([]byte(nil), step...)
@@ -161,8 +183,6 @@ func counterAt(iv, step []byte, index int) []byte {
 	return result
 }
 
-// parallelBlocks использует ограниченный пул работников и останавливает
-// выдачу новых блоков при отмене операции или первой ошибке шифра.
 func parallelBlocks(ctx context.Context, count, workers int, operation func(int) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
